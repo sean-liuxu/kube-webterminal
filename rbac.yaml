@@ -1,0 +1,96 @@
+---
+# ============================================================
+# K8s Pod WebTerminal — Minimal RBAC Configuration
+# ============================================================
+# This config grants the webterminal service account the minimum
+# permissions required to exec into pods across all namespaces.
+# For multi-tenant environments, use ClusterRole with namespace-scoped
+# RoleBindings, or tighten to specific namespaces.
+
+---
+# ServiceAccount for the webterminal gateway pod itself.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webterminal-gateway
+  namespace: webterminal    # Adjust to your deployment namespace
+  labels:
+    app: webterminal-gateway
+
+---
+# ClusterRole: minimum permissions for pod exec.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: webterminal-exec
+  labels:
+    app: webterminal-gateway
+rules:
+  # Core permission: exec into pods.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+
+  # Needed to list pods (optional, for UI autocomplete).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+  # Needed to read pod status (optional, container existence check).
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+
+  # Needed for namespace listing (optional, for namespace dropdown).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding: bind the ClusterRole to the ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: webterminal-exec-binding
+  labels:
+    app: webterminal-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: webterminal-exec
+subjects:
+  - kind: ServiceAccount
+    name: webterminal-gateway
+    namespace: webterminal
+
+---
+# Optional: Namespace-scoped variant (if you only need one namespace).
+# Replace ClusterRole/ClusterRoleBinding above with these if you want
+# to restrict the gateway to a single namespace.
+#
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: Role
+# metadata:
+#   name: webterminal-exec
+#   namespace: <target-namespace>
+# rules:
+#   - apiGroups: [""]
+#     resources: ["pods/exec"]
+#     verbs: ["create", "get"]
+#   - apiGroups: [""]
+#     resources: ["pods"]
+#     verbs: ["get", "list"]
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: webterminal-exec-binding
+#   namespace: <target-namespace>
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: Role
+#   name: webterminal-exec
+# subjects:
+#   - kind: ServiceAccount
+#     name: webterminal-gateway
+#     namespace: webterminal

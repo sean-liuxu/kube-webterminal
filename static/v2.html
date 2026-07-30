@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>K8s Pod WebTerminal</title>
+<link rel="stylesheet" href="/xterm/xterm.min.css" />
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== Top Bar ===== */
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 16px; background: #16213e; border-bottom: 1px solid #0f3460;
+  min-height: 28px; flex-shrink: 0;
+}
+#topbar .logo { font-weight: 700; font-size: 14px; color: #e94560; }
+#topbar .info { font-size: 11px; color: #a0a0b0; }
+#topbar .sessions-badge {
+  background: #0f3460; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; color: #e0e0e0;
+}
+#topbar .sessions-badge.warn { background: #e94560; }
+
+/* ===== Connection Form ===== */
+#conn-panel {
+  background: #16213e; border-bottom: 1px solid #0f3460;
+  padding: 4px 16px; display: flex; flex-wrap: wrap; gap: 6px;
+  align-items: flex-end; flex-shrink: 0; transition: padding 0.2s;
+}
+#conn-panel .field { display: flex; flex-direction: column; gap: 1px; }
+#conn-panel label { font-size: 10px; color: #a0a0b0; text-transform: uppercase; }
+#conn-panel input, #conn-panel select {
+  background: #0f3460; border: 1px solid #1a1a4e; color: #e0e0e0;
+  padding: 3px 8px; border-radius: 3px; font-size: 12px; min-width: 100px;
+}
+#conn-panel input:focus, #conn-panel select:focus { outline: none; border-color: #e94560; }
+#btn-connect {
+  background: #e94560; color: #fff; border: none; padding: 4px 16px;
+  border-radius: 3px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+#btn-connect:hover { background: #c73a52; }
+#btn-connect:disabled { background: #555; cursor: not-allowed; }
+#ws-url { min-width: 180px; }
+/* ===== Tab Bar ===== */
+#tab-bar {
+  display: flex; background: #16213e; border-bottom: 1px solid #0f3460;
+  overflow-x: auto; flex-shrink: 0; min-height: 28px;
+}
+#tab-bar:empty { display: none; }
+.tab {
+  display: flex; align-items: center; gap: 3px;
+  padding: 3px 8px; font-size: 10px; color: #a0a0b0;
+  cursor: pointer; border-right: 1px solid #0f3460;
+  white-space: nowrap; user-select: none; flex-shrink: 0;
+}
+.tab:hover { background: #1a1a3e; color: #e0e0e0; }
+.tab.active { background: #0f3460; color: #fff; border-bottom: 2px solid #e94560; }
+.tab .tab-status { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.tab .tab-status.connected { background: #4caf50; }
+.tab .tab-status.disconnected { background: #f44336; }
+.tab .tab-status.connecting { background: #ff9800; animation: pulse 1s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.tab .tab-label { cursor: pointer; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.tab .tab-close {
+  font-size: 14px; font-weight: 700; color: #a0a0b0; cursor: pointer; line-height: 1; margin-left: 2px;
+}
+.tab .tab-close:hover { color: #e94560; }
+
+/* ===== Right-Click Context Menu ===== */
+#context-menu {
+  display: none; position: fixed; z-index: 10000;
+  background: #16213e; border: 1px solid #0f3460; border-radius: 6px;
+  padding: 4px 0; min-width: 160px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#context-menu .ctx-item {
+  padding: 8px 16px; font-size: 13px; color: #e0e0e0; cursor: pointer;
+  display: flex; align-items: center; gap: 10px; user-select: none;
+}
+#context-menu .ctx-item:hover { background: #0f3460; }
+#context-menu .ctx-item .ctx-icon { font-size: 14px; width: 18px; text-align: center; }
+#context-menu .ctx-item.locked { color: #ff9800; }
+#context-menu .ctx-divider { height: 1px; background: #0f3460; margin: 4px 0; }
+
+/* ===== Terminal Container ===== */
+#terminals { flex: 1; overflow: hidden; position: relative; }
+.term-wrapper { position: absolute; inset: 0; display: none; }
+.term-wrapper.active { display: flex; }
+.term-wrapper .xterm { height: 100%; width: 100%; padding: 1px; }
+
+/* Fullscreen terminal */
+.term-wrapper.fullscreen {
+  position: fixed; inset: 0; z-index: 9998; background: #1a1a2e;
+}
+.term-wrapper.fullscreen .xterm { padding: 8px; }
+#fs-hint {
+  display: none; position: fixed; top: 8px; right: 16px; z-index: 9999;
+  font-size: 12px; color: #4caf50; background: #16213e; padding: 4px 10px;
+  border-radius: 4px; border: 1px solid #0f3460;
+}
+
+/* ===== Status Bar ===== */
+#statusbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 16px; background: #16213e; border-top: 1px solid #0f3460;
+  font-size: 11px; color: #a0a0b0; flex-shrink: 0; min-height: 18px;
+}
+.status-ok { color: #4caf50; }
+.status-err { color: #f44336; }
+
+/* ===== Rename Input ===== */
+.tab-rename-input {
+  background: #0f3460; border: 1px solid #e94560; color: #fff;
+  font-size: 12px; padding: 1px 4px; border-radius: 2px; width: 120px;
+  outline: none;
+}
+
+/* ===== Toast ===== */
+#toast-container {
+  position: fixed; top: 16px; right: 16px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.toast {
+  padding: 10px 18px; border-radius: 6px; font-size: 13px; color: #fff;
+  animation: slideIn 0.3s ease; max-width: 420px;
+}
+.toast.error { background: #f44336; }
+.toast.warn  { background: #ff9800; }
+.toast.info  { background: #2196f3; }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* ===== File Manager Modal ===== */
+#fm-overlay {
+  display: none; position: fixed; inset: 0; z-index: 10001;
+  background: rgba(0,0,0,0.6); justify-content: center; align-items: center;
+}
+#fm-overlay.show { display: flex; }
+#fm-modal {
+  background: #1a1a2e; border: 1px solid #0f3460; border-radius: 8px;
+  width: 780px; max-width: 95vw; max-height: 85vh; display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+#fm-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: #16213e; border-radius: 8px 8px 0 0;
+  border-bottom: 1px solid #0f3460;
+}
+#fm-header .fm-title { font-size: 15px; font-weight: 600; color: #e0e0e0; }
+#fm-header .fm-close { font-size: 18px; cursor: pointer; color: #a0a0b0; }
+#fm-header .fm-close:hover { color: #e94560; }
+#fm-toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 16px;
+  background: #16213e; border-bottom: 1px solid #0f3460;
+}
+#fm-toolbar .fm-path {
+  flex: 1; height: 30px; padding: 0 10px; background: #0f3460;
+  border: 1px solid #1a1a4e; color: #e0e0e0; border-radius: 3px; font-size: 13px;
+}
+#fm-toolbar .fm-btn {
+  width: 30px; height: 30px; border: none; border-radius: 3px;
+  background: #2196f3; color: #fff; font-size: 14px; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; flex-shrink: 0;
+}
+#fm-toolbar .fm-btn:hover { background: #1976d2; }
+#fm-toolbar .fm-btn.upload-btn { width: auto; padding: 0 12px; font-size: 12px; gap: 4px; position: relative; }
+#fm-upload-menu {
+  display: none; position: absolute; top: 100%; right: 0; margin-top: 4px;
+  background: #16213e; border: 1px solid #0f3460; border-radius: 4px;
+  overflow: hidden; z-index: 10; min-width: 140px;
+}
+#fm-upload-menu .fm-upload-item {
+  padding: 8px 14px; font-size: 12px; color: #e0e0e0; cursor: pointer; white-space: nowrap;
+}
+#fm-upload-menu .fm-upload-item:hover { background: #0f3460; }
+#fm-table-wrap { flex: 1; overflow-y: auto; padding: 0; }
+#fm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+#fm-table th {
+  position: sticky; top: 0; background: #16213e; padding: 8px 12px;
+  text-align: left; font-weight: 600; color: #a0a0b0; cursor: pointer;
+  border-bottom: 1px solid #0f3460; user-select: none; white-space: nowrap;
+}
+#fm-table th:hover { color: #e0e0e0; }
+#fm-table th .sort-arrow { margin-left: 4px; font-size: 10px; }
+#fm-table td {
+  padding: 6px 12px; border-bottom: 1px solid #0a0a1e;
+  white-space: nowrap; color: #c0c0d0;
+}
+#fm-table tr:hover td { background: #0f3460; }
+#fm-table .fm-name { cursor: pointer; }
+#fm-table .fm-name.dir { color: #4fc3f7; }
+#fm-table .fm-name.file { color: #e0e0e0; }
+#fm-table .fm-size { color: #a0a0b0; text-align: right; }
+#fm-table .fm-time { color: #a0a0b0; }
+#fm-status {
+  padding: 6px 16px; background: #16213e; border-top: 1px solid #0f3460;
+  font-size: 11px; color: #a0a0b0; border-radius: 0 0 8px 8px; min-height: 22px;
+}
+
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div id="topbar">
+  <span class="logo">K8s WebTerminal</span>
+  <span class="info">Kubernetes Pod 远程终端</span>
+  <span id="sessions-count" class="sessions-badge">会话: 0</span>
+</div>
+
+<!-- Connection Panel -->
+<div id="conn-panel">
+  <div class="field">
+    <label>后端地址</label>
+    <input id="ws-url" type="text" placeholder="ws://host:port/ws/terminal">
+    <script>document.getElementById('ws-url').value=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws/terminal';</script>
+  </div>
+  <div class="field">
+    <label>Namespace</label>
+    <input id="conn-ns" type="text" value="default" placeholder="namespace">
+  </div>
+  <div class="field">
+    <label>Pod 名称</label>
+    <input id="conn-pod" type="text" placeholder="pod-name">
+  </div>
+  <div class="field">
+    <label>容器 (可选)</label>
+    <input id="conn-container" type="text" placeholder="container-name">
+  </div>
+  <div class="field">
+    <label>Shell</label>
+    <select id="conn-shell">
+      <option value="/bin/bash">/bin/bash</option>
+      <option value="/bin/sh">/bin/sh</option>
+    </select>
+  </div>
+  <button id="btn-connect" onclick="openTerminal()">连接终端</button>
+  <button onclick="openFileManager()" style="background:#2196f3;color:#fff;border:none;padding:4px 16px;border-radius:3px;font-size:12px;cursor:pointer;white-space:nowrap;">📂 文件管理</button>
+  <input type="file" id="file-input-file" style="display:none" multiple onchange="handleFileSelect(event)">
+  <input type="file" id="file-input-dir" style="display:none" webkitdirectory onchange="handleFileSelect(event)">
+
+<!-- File Manager Modal -->
+<div id="fm-overlay">
+<div id="fm-modal">
+  <div id="fm-header">
+    <span class="fm-title" id="fm-title">文件管理</span>
+    <span class="fm-close" onclick="closeFileManager()">✕</span>
+  </div>
+  <div id="fm-toolbar">
+    <input id="fm-path" class="fm-path" type="text" value="/" onkeydown="if(event.key==='Enter') fmList(document.getElementById('fm-path').value)">
+    <button class="fm-btn" title="上级目录" onclick="fmGoUp()">⬆</button>
+    <button class="fm-btn" title="刷新" onclick="fmList(fmCurPath)">🔄</button>
+    <div style="position:relative;">
+      <button class="fm-btn upload-btn" title="上传" onclick="event.stopPropagation();toggleFmUploadMenu()">📤 上传</button>
+      <div id="fm-upload-menu">
+        <div class="fm-upload-item" onclick="document.getElementById('file-input-file').click();hideFmUploadMenu()">📄 上传文件</div>
+        <div class="fm-upload-item" onclick="document.getElementById('file-input-dir').click();hideFmUploadMenu()">📁 上传文件夹</div>
+      </div>
+    </div>
+  </div>
+  <div id="fm-table-wrap">
+    <table id="fm-table">
+      <thead><tr>
+        <th onclick="fmSort('name')" style="min-width:200px">名字 <span class="sort-arrow" id="sort-name"></span></th>
+        <th onclick="fmSort('size')" style="min-width:90px">大小 <span class="sort-arrow" id="sort-size"></span></th>
+        <th onclick="fmSort('time')" style="min-width:140px">修改时间 <span class="sort-arrow" id="sort-time">▼</span></th>
+      </tr></thead>
+      <tbody id="fm-tbody"></tbody>
+    </table>
+  </div>
+  <div id="fm-status"></div>
+</div>
+</div>
+
+</div>
+
+<!-- Upload Progress Bar -->
+<div id="upload-progress" style="display:none; padding:6px 16px; background:#16213e; border-bottom:1px solid #0f3460; align-items:center; gap:8px;">
+  <span id="up-name" style="font-size:11px; color:#e0e0e0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+  <span id="up-pct" style="font-size:11px; color:#4caf50; white-space:nowrap;">0%</span>
+  <div style="flex:1; max-width:200px; height:4px; background:#0f3460; border-radius:2px; overflow:hidden;">
+    <div id="up-bar" style="height:100%; width:0%; background:#4caf50; transition:width 0.3s;"></div>
+  </div>
+  <span id="up-size" style="font-size:10px; color:#a0a0b0; white-space:nowrap;">0 / 0</span>
+  <span id="up-speed" style="font-size:10px; color:#ff9800; white-space:nowrap;"></span>
+</div>
+
+<!-- Tab Bar -->
+<div id="tab-bar"></div>
+
+<!-- Terminal Container -->
+<div id="terminals"></div>
+
+<!-- Fullscreen hint -->
+<div id="fs-hint">按 Esc 退出全屏</div>
+
+<!-- Status Bar -->
+<div id="statusbar">
+  <span id="status-text" class="status-ok">就绪</span>
+  <span id="conn-count">连接数: 0/3</span>
+</div>
+
+<!-- Context Menu -->
+<div id="context-menu"></div>
+
+<!-- Toast Container -->
+<div id="toast-container"></div>
+
+<script src="/xterm/xterm.min.js">
+</script>
+<script src="/xterm/addon-fit.min.js">
+</script>
+<script>
+"use strict";
+
+
+// ==================== Global State ====================
+let terminalIndex = 0;
+
+/** @type {Map<number, {
+ *   id: number, ws: WebSocket, term: Terminal, fitAddon: any,
+ *   namespace: string, pod: string, container: string, shell: string,
+ *   label: string, locked: boolean, fullscreen: boolean,
+ *   status: 'connecting'|'connected'|'disconnected',
+ *   reconnectAttempts: number, _intentionalClose: boolean
+ * }>} */
+const sessions = new Map();
+let activeTabId = null;
+const podCounters = {}; // { "podName": nextSessionNum }
+
+// ==================== Toast ====================
+function showToast(msg, type) {
+  type = type || 'info';
+  const c = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 4000);
+}
+
+// ==================== Status Updates ====================
+function updateStatus() {
+  const cnt = sessions.size;
+  document.getElementById('sessions-count').textContent = '会话: ' + cnt;
+  document.getElementById('conn-count').textContent = '连接数: ' + cnt + '/3';
+  const badge = document.getElementById('sessions-count');
+  badge.className = cnt >= 3 ? 'sessions-badge warn' : 'sessions-badge';
+}
+
+// ==================== Tab Management ====================
+function createTab(id, pod, container) {
+  const label = pod + '-' + (podCounters[pod] || 1);
+  const bar = document.getElementById('tab-bar');
+  const tab = document.createElement('div');
+  tab.className = 'tab';
+  tab.id = 'tab-' + id;
+  tab.innerHTML =
+    '<span class="tab-status connecting" id="tab-status-' + id + '"></span>' +
+    '<span class="tab-label" id="tab-label-' + id + '" title="右击菜单 | 双击重命名">' + escapeHTML(label) + '</span>' +
+    '<span class="tab-close" title="关闭" onclick="event.stopPropagation(); closeTerminal(' + id + ')">✕</span>';
+
+  // Right-click context menu
+  tab.oncontextmenu = (e) => { e.preventDefault(); showContextMenu(e, id); };
+  tab.onclick = () => switchTab(id);
+
+  // Double-click label to rename
+  const labelEl = tab.querySelector('.tab-label');
+  labelEl.ondblclick = (e) => { e.stopPropagation(); startRename(id); };
+
+  bar.appendChild(tab);
+}
+
+function setTabLabel(id, newLabel) {
+  const el = document.getElementById('tab-label-' + id);
+  if (el) { el.textContent = newLabel; el.title = '双击重命名'; }
+}
+
+function startRename(id) {
+  const el = document.getElementById('tab-label-' + id);
+  if (!el) return;
+  const oldLabel = el.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'tab-rename-input';
+  input.value = oldLabel;
+  input.onblur = () => finishRename(id, input.value.trim() || oldLabel);
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') finishRename(id, input.value.trim() || oldLabel);
+    if (e.key === 'Escape') finishRename(id, oldLabel);
+  };
+  el.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+function finishRename(id, newLabel) {
+  const input = document.querySelector('.tab-rename-input');
+  if (!input) return;
+  const span = document.createElement('span');
+  span.className = 'tab-label';
+  span.id = 'tab-label-' + id;
+  span.textContent = newLabel;
+  span.title = '双击重命名';
+  span.ondblclick = (e) => { e.stopPropagation(); startRename(id); };
+  input.replaceWith(span);
+  const sess = sessions.get(id);
+  if (sess) sess.label = newLabel;
+}
+
+function switchTab(id) {
+  if (activeTabId === id) return;
+  if (activeTabId !== null) {
+    const oldTab = document.getElementById('tab-' + activeTabId);
+    if (oldTab) oldTab.classList.remove('active');
+    const oldW = document.getElementById('term-wrapper-' + activeTabId);
+    if (oldW) oldW.classList.remove('active');
+  }
+  activeTabId = id;
+  const newTab = document.getElementById('tab-' + id);
+  if (newTab) newTab.classList.add('active');
+  const newW = document.getElementById('term-wrapper-' + id);
+  if (newW) {
+    newW.classList.add('active');
+    const sess = sessions.get(id);
+    if (sess && sess.fitAddon) setTimeout(() => sess.fitAddon.fit(), 50);
+  }
+}
+
+function updateTabStatus(id, status) {
+  const el = document.getElementById('tab-status-' + id);
+  if (!el) return;
+  el.className = 'tab-status ' + status;
+}
+
+// ==================== Context Menu ====================
+let ctxMenuTarget = null;
+
+function showContextMenu(e, id) {
+  e.preventDefault();
+  ctxMenuTarget = id;
+  const menu = document.getElementById('context-menu');
+  const sess = sessions.get(id);
+  if (!sess) return;
+
+  const lockIcon = sess.locked ? '🔒' : '🔓';
+  const lockText = sess.locked ? '解锁标签' : '锁定标签';
+  const lockClass = sess.locked ? ' locked' : '';
+
+  menu.innerHTML =
+    '<div class="ctx-item" onclick="ctxRename()"><span class="ctx-icon">✏️</span>重命名</div>' +
+    '<div class="ctx-item" onclick="ctxCopy()"><span class="ctx-icon">⧉</span>复制终端</div>' +
+    '<div class="ctx-divider"></div>' +
+    '<div class="ctx-item' + lockClass + '" onclick="ctxToggleLock()"><span class="ctx-icon">' + lockIcon + '</span>' + lockText + '</div>' +
+    '<div class="ctx-item" onclick="ctxFullscreen()"><span class="ctx-icon">⛶</span>全屏</div>';
+
+  menu.style.display = 'block';
+  menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 180) + 'px';
+
+  // Click elsewhere to close
+  setTimeout(() => document.addEventListener('click', hideContextMenu), 0);
+}
+
+function hideContextMenu() {
+  document.getElementById('context-menu').style.display = 'none';
+  document.removeEventListener('click', hideContextMenu);
+  ctxMenuTarget = null;
+}
+
+function ctxRename() {
+  const id = ctxMenuTarget;
+  hideContextMenu();
+  if (id) startRename(id);
+}
+
+function ctxCopy() {
+  const id = ctxMenuTarget;
+  hideContextMenu();
+  if (!id) return;
+  const sess = sessions.get(id);
+  if (!sess) return;
+  if (sessions.size >= 3) { showToast('已达到最大终端会话数上限 (3)', 'error'); return; }
+  document.getElementById('conn-ns').value = sess.namespace;
+  document.getElementById('conn-pod').value = sess.pod;
+  document.getElementById('conn-container').value = sess.container || '';
+  document.getElementById('conn-shell').value = sess.shell || '/bin/bash';
+  openTerminal();
+}
+
+function ctxToggleLock() {
+  const id = ctxMenuTarget;
+  hideContextMenu();
+  if (!id) return;
+  const sess = sessions.get(id);
+  if (!sess) return;
+  sess.locked = !sess.locked;
+  // Update tab indicator
+  const labelEl = document.getElementById('tab-label-' + id);
+  if (labelEl) {
+    labelEl.textContent = (sess.locked ? '🔒 ' : '') + (sess.label || labelEl.textContent.replace(/^🔒 /, ''));
+  }
+  showToast(sess.locked ? '标签已锁定' : '标签已解锁', 'info');
+}
+
+function ctxFullscreen() {
+  const id = ctxMenuTarget;
+  hideContextMenu();
+  if (!id) return;
+  const sess = sessions.get(id);
+  const wrapper = document.getElementById('term-wrapper-' + id);
+  if (!sess || !wrapper) return;
+  sess.fullscreen = !sess.fullscreen;
+  if (sess.fullscreen) {
+    wrapper.classList.add('fullscreen');
+    document.getElementById('fs-hint').style.display = 'block';
+  } else {
+    wrapper.classList.remove('fullscreen');
+    document.getElementById('fs-hint').style.display = 'none';
+  }
+  setTimeout(() => { if (sess.fitAddon) sess.fitAddon.fit(); }, 50);
+
+  if (sess.fullscreen) {
+    // Capture phase so Esc is caught before xterm.js processes it
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        sess.fullscreen = false;
+        wrapper.classList.remove('fullscreen');
+        document.getElementById('fs-hint').style.display = 'none';
+        setTimeout(() => { if (sess.fitAddon) sess.fitAddon.fit(); }, 50);
+        document.removeEventListener('keydown', escHandler, true);
+      }
+    };
+    document.addEventListener('keydown', escHandler, true);
+    // Also store handler so closeTerminal can clean up
+    sess._escHandler = escHandler;
+  }
+}
+
+// ==================== Terminal Creation ====================
+function openTerminal() {
+  const ns = document.getElementById('conn-ns').value.trim();
+  const pod = document.getElementById('conn-pod').value.trim();
+  const container = document.getElementById('conn-container').value.trim();
+  const shell = document.getElementById('conn-shell').value;
+  const wsURL = document.getElementById('ws-url').value.trim();
+
+  if (!ns) { showToast('请填写 Namespace', 'warn'); return; }
+  if (!pod) { showToast('请填写 Pod 名称', 'warn'); return; }
+  if (!wsURL) { showToast('请填写后端 WebSocket 地址', 'warn'); return; }
+
+  if (sessions.size >= 3) {
+    showToast('已达到最大终端会话数上限 (3)，请关闭其他终端后重试', 'error');
+    return;
+  }
+
+  // Assign session number for this pod
+  if (!podCounters[pod]) podCounters[pod] = 1;
+  const id = ++terminalIndex;
+
+  // Create tab and terminal wrapper.
+  createTab(id, pod, container);
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'term-wrapper active';
+  wrapper.id = 'term-wrapper-' + id;
+  document.getElementById('terminals').appendChild(wrapper);
+
+  // Deactivate previous tab.
+  if (activeTabId !== null) {
+    const oldTab = document.getElementById('tab-' + activeTabId);
+    if (oldTab) oldTab.classList.remove('active');
+    const oldW = document.getElementById('term-wrapper-' + activeTabId);
+    if (oldW) oldW.classList.remove('active');
+  }
+  activeTabId = id;
+
+  // Create xterm instance.
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    fontSize: 36,
+    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    theme: {
+      background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#e94560',
+      selectionBackground: '#e9456080',
+      black: '#1a1a2e', red: '#e94560', green: '#4caf50', yellow: '#ff9800',
+      blue: '#2196f3', magenta: '#9c27b0', cyan: '#00bcd4', white: '#e0e0e0',
+      brightBlack: '#555', brightRed: '#ff5252', brightGreen: '#69f0ae',
+      brightYellow: '#ffd740', brightBlue: '#40c4ff', brightMagenta: '#e040fb',
+      brightCyan: '#18ffff', brightWhite: '#ffffff'
+    },
+    allowProposedApi: true,
+    scrollback: 5000
+  });
+  term.open(wrapper);
+  term.setOption('fontSize', 36); console.log('FONTSIZE set to', term.options.fontSize); term.write('FONT:' + term.options.fontSize + 'px\r\n');
+
+
+  const FitAddonClass = typeof FitAddon === 'function' ? FitAddon : (FitAddon.FitAddon || FitAddon);
+  const fitAddon = new FitAddonClass();
+  term.loadAddon(fitAddon);
+  setTimeout(() => fitAddon.fit(), 100);
+
+  // Ctrl+ScrollWheel to adjust font size (terminal only, not page content).
+  wrapper.addEventListener('wheel', function(e) {
+    if (!e.ctrlKey && !e.metaKey) return;
+    if (activeTabId !== id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const delta = e.deltaY > 0 ? -1 : 1;
+    const sizes = [10, 12, 14, 16, 18, 20, 24, 28, 32];
+    let cur = term.options.fontSize || 14;
+    let idx = sizes.indexOf(cur);
+    if (idx < 0) {
+      for (let j = 0; j < sizes.length; j++) { if (sizes[j] >= cur) { idx = j; break; } }
+      if (idx < 0) idx = sizes.length - 1;
+    }
+    idx = Math.max(0, Math.min(sizes.length - 1, idx + delta));
+    term.options.fontSize = sizes[idx];
+    fitAddon.fit();
+    const s = sessions.get(id);
+    if (s && s.ws && s.ws.readyState === WebSocket.OPEN) {
+      setTimeout(() => {
+        s.ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }, 50);
+    }
+  }, { passive: false });
+
+  const session = {
+    id, ws: null, term, fitAddon,
+    namespace: ns, pod, container, shell,
+    label: pod + '-' + podCounters[pod],
+    locked: false, fullscreen: false,
+    status: 'connecting', reconnectAttempts: 0
+  };
+  sessions.set(id, session);
+
+  // Increment counter for next connection to same pod
+  podCounters[pod] = (podCounters[pod] || 1) + 1;
+  if (podCounters[pod] > 3) podCounters[pod] = 1;
+
+  updateStatus();
+
+  // Connect WebSocket.
+  connectWS(id, wsURL, session);
+
+  // Observe resize and re-fit.
+  const ro = new ResizeObserver(() => { setTimeout(() => fitAddon.fit(), 10); });
+  ro.observe(wrapper);
+
+  // xterm resize -> send to backend.
+  term.onResize(({ cols, rows }) => {
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+    }
+  });
+
+  // xterm input -> send to backend.
+  term.onData((data) => {
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({ type: 'stdin', data }));
+    }
+  });
+
+  // Focus terminal.
+  setTimeout(() => term.focus(), 150);
+}
+
+// ==================== WebSocket Connection ====================
+function connectWS(id, wsURL, session) {
+  updateTabStatus(id, 'connecting');
+  setStatus('连接中...');
+  const ws = new WebSocket(wsURL);
+  ws.binaryType = 'arraybuffer';
+  session.ws = ws;
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({
+      type: 'init',
+      namespace: session.namespace,
+      pod: session.pod,
+      container: session.container || '',
+      command: session.shell,
+      user_id: 'web-user'
+    }));
+  };
+
+  ws.onmessage = (evt) => {
+    if (typeof evt.data === 'string') {
+      try {
+        const msg = JSON.parse(evt.data);
+        switch (msg.type) {
+          case 'ready':
+            session.status = 'connected';
+            session.reconnectAttempts = 0;
+            updateTabStatus(id, 'connected');
+            setTabLabel(id, session.label);
+            setStatus('已连接: ' + session.namespace + '/' + session.pod);
+            session.term.focus();
+            return;
+          case 'error':
+            showToast('错误: ' + msg.message, 'error');
+            updateTabStatus(id, 'disconnected');
+            setStatus('错误', 'err');
+            session.status = 'disconnected';
+            return;
+          case 'timeout':
+            showToast('会话超时: ' + msg.message, 'warn');
+            updateTabStatus(id, 'disconnected');
+            setStatus('超时断开', 'err');
+            session.status = 'disconnected';
+            return;
+          case 'pong': return;
+        }
+      } catch (_) {
+        session.term.write(evt.data);
+      }
+      return;
+    }
+    if (evt.data instanceof ArrayBuffer) {
+      session.term.write(new Uint8Array(evt.data));
+    }
+  };
+
+  ws.onclose = (evt) => {
+    if (session._intentionalClose) { session.status = 'disconnected'; return; }
+    session.status = 'disconnected';
+    updateTabStatus(id, 'disconnected');
+    if (session.reconnectAttempts < 3) {
+      session.reconnectAttempts++;
+      const delay = Math.pow(2, session.reconnectAttempts) * 1000;
+      showToast('连接断开，' + delay/1000 + 's 后自动重连 (' + session.reconnectAttempts + '/3)...', 'warn');
+      setTimeout(() => {
+        if (session.status === 'disconnected') connectWS(id, wsURL, session);
+      }, delay);
+    } else {
+      showToast('重连失败，已达最大重试次数', 'error');
+      setStatus('已断开', 'err');
+    }
+  };
+
+  ws.onerror = () => {
+    updateTabStatus(id, 'disconnected');
+    setStatus('连接错误', 'err');
+  };
+}
+
+// ==================== Terminal Close ====================
+function closeTerminal(id) {
+  const session = sessions.get(id);
+  if (!session) return;
+  if (session.locked) {
+    showToast('该标签已锁定，请先解锁', 'warn');
+    return;
+  }
+
+  session._intentionalClose = true;
+  if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+    try { session.ws.send(JSON.stringify({ type: 'close' })); } catch (_) {}
+    session.ws.close(1000, 'User closed');
+  }
+  session.term.dispose();
+
+  // Clean up Esc handler
+  if (session._escHandler) {
+    document.removeEventListener('keydown', session._escHandler, true);
+    session._escHandler = null;
+  }
+  // Restore fullscreen if needed
+  if (session.fullscreen) {
+    document.getElementById('fs-hint').style.display = 'none';
+  }
+
+  const tab = document.getElementById('tab-' + id);
+  if (tab) tab.remove();
+  const wrapper = document.getElementById('term-wrapper-' + id);
+  if (wrapper) wrapper.remove();
+
+  sessions.delete(id);
+  updateStatus();
+
+  if (activeTabId === id) {
+    const remaining = [...sessions.keys()];
+    if (remaining.length > 0) {
+      switchTab(remaining[remaining.length - 1]);
+    } else {
+      activeTabId = null;
+      setStatus('就绪', 'ok');
+    }
+  }
+}
+
+// ==================== Page Lifecycle ====================
+window.addEventListener('beforeunload', () => {
+  for (const [, s] of sessions) {
+    s._intentionalClose = true;
+    if (s.ws && s.ws.readyState === WebSocket.OPEN) {
+      try { s.ws.send(JSON.stringify({ type: 'close' })); } catch (_) {}
+      s.ws.close(1000, 'Page unloaded');
+    }
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key === 'N') {
+    e.preventDefault();
+    document.getElementById('conn-pod').focus();
+  }
+});
+
+// ==================== Helpers ====================
+function setStatus(text, cls) {
+  const el = document.getElementById('status-text');
+  el.textContent = text;
+  el.className = cls === 'err' ? 'status-err' : 'status-ok';
+}
+
+function escapeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && activeTabId !== null) {
+    const s = sessions.get(activeTabId);
+    if (s && s.fitAddon) setTimeout(() => s.fitAddon.fit(), 100);
+  }
+});
+
+// ==================== File Upload ====================
+function handleFileSelect(evt) {
+  var files = evt.target.files;
+  if (!files || files.length === 0) return;
+  var ns = document.getElementById('conn-ns').value.trim();
+  var pod = document.getElementById('conn-pod').value.trim();
+  if (!ns || !pod) { showToast('请先填写 Namespace 和 Pod 名称', 'warn'); return; }
+  var container = document.getElementById('conn-container').value.trim();
+  var path = document.getElementById('upload-path').value.trim() || '/tmp';
+  var wsUrl = document.getElementById('ws-url').value.trim();
+  var apiBase = wsUrl.replace('/ws/terminal', '').replace('ws://', 'http://').replace('wss://', 'https://');
+  if (!apiBase) apiBase = location.protocol + '//' + location.host;
+
+  var totalSize = 0;
+  for (var i = 0; i < files.length; i++) totalSize += files[i].size;
+  if (totalSize > 5 * 1024 * 1024 * 1024) { showToast('文件总大小超过 5GB 上限', 'error'); evt.target.value = ''; return; }
+
+  uploadFiles(files, ns, pod, container, path, apiBase, 0);
+  evt.target.value = '';
+}
+
+function uploadFiles(files, ns, pod, container, path, apiBase, idx) {
+  if (idx >= files.length) {
+    showToast('全部上传完成', 'info');
+    document.getElementById('upload-progress').style.display = 'none';
+    return;
+  }
+  var file = files[idx];
+  var relPath = file.webkitRelativePath || file.name;
+  var formData = new FormData();
+  formData.append('namespace', ns);
+  formData.append('pod', pod);
+  formData.append('container', container || '');
+  var dir = relPath.includes('/') ? relPath.substring(0, relPath.lastIndexOf('/')) : '';
+  formData.append('path', path + (dir ? '/' + dir : ''));
+  formData.append('file', file, relPath);
+
+  var xhr = new XMLHttpRequest();
+  var pDiv = document.getElementById('upload-progress');
+  document.getElementById('up-name').textContent = '[' + (idx + 1) + '/' + files.length + '] ' + relPath;
+  document.getElementById('up-pct').textContent = '0%';
+  document.getElementById('up-bar').style.width = '0%';
+  document.getElementById('up-size').textContent = '0 / ' + formatSize(file.size);
+  document.getElementById('up-speed').textContent = '';
+  pDiv.style.display = 'flex';
+
+  var startTime = Date.now();
+  var lastTime = startTime;
+  var lastLoaded = 0;
+
+  xhr.upload.onprogress = function(e) {
+    if (e.lengthComputable) {
+      var now = Date.now();
+      var elapsed = (now - startTime) / 1000;
+      var pct = Math.round(e.loaded / e.total * 100);
+      document.getElementById('up-pct').textContent = pct + '%';
+      document.getElementById('up-bar').style.width = pct + '%';
+      document.getElementById('up-size').textContent = formatSize(e.loaded) + ' / ' + formatSize(e.total);
+
+      // Calculate speed (update every 0.5s to avoid flickering)
+      if (now - lastTime > 500) {
+        var speed = (e.loaded - lastLoaded) / ((now - lastTime) / 1000);
+        document.getElementById('up-speed').textContent = formatSize(speed) + '/s';
+        lastTime = now;
+        lastLoaded = e.loaded;
+      }
+    }
+  };
+
+  xhr.onload = function() {
+    if (xhr.status === 200) {
+      uploadFiles(files, ns, pod, container, path, apiBase, idx + 1);
+    } else {
+      showToast('上传失败: HTTP ' + xhr.status, 'error');
+      pDiv.style.display = 'none';
+    }
+  };
+
+  xhr.onerror = function() { showToast('上传失败: 网络错误', 'error'); pDiv.style.display = 'none'; };
+  xhr.open('POST', apiBase + '/api/upload');
+  xhr.send(formData);
+}
+
+function formatSize(bytes) {
+  if (bytes === 0) return '0 B';
+  var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return parseFloat((bytes / Math.pow(1024, i)).toFixed(1)) + ' ' + units[i];
+}
+
+document.addEventListener('dragover', function(e) { e.preventDefault(); });
+document.addEventListener('drop', function(e) {
+  e.preventDefault();
+  var ns = document.getElementById('conn-ns').value.trim();
+  var pod = document.getElementById('conn-pod').value.trim();
+  if (!ns || !pod) { showToast('请先填写 Namespace 和 Pod 名称', 'warn'); return; }
+  var files = e.dataTransfer.files;
+  if (files.length === 0) return;
+  var total = 0;
+  for (var i = 0; i < files.length; i++) total += files[i].size;
+  if (total > 5 * 1024 * 1024 * 1024) { showToast('文件总大小超过 5GB 上限', 'error'); return; }
+  var container = document.getElementById('conn-container').value.trim();
+  var path = document.getElementById('upload-path').value.trim() || '/tmp';
+  var wsUrl = document.getElementById('ws-url').value.trim();
+  var apiBase = wsUrl.replace('/ws/terminal', '').replace('ws://', 'http://').replace('wss://', 'https://');
+  uploadFiles(files, ns, pod, container, path, apiBase, 0);
+});
+
+
+// ==================== File Manager ====================
+var fmCurPath = "/";
+var fmCurNs = "";
+var fmCurPod = "";
+var fmCurContainer = "";
+var fmFiles = [];
+var fmSortKey = "time";
+var fmSortAsc = false; // default: newest first
+
+function openFileManager(ns, pod, container) {
+  fmCurNs = ns || document.getElementById('conn-ns').value.trim();
+  fmCurPod = pod || document.getElementById('conn-pod').value.trim();
+  fmCurContainer = container || document.getElementById('conn-container').value.trim();
+  if (!fmCurNs || !fmCurPod) { showToast('请先填写 Namespace 和 Pod 名称', 'warn'); return; }
+  document.getElementById('fm-title').textContent = '文件管理 - ' + fmCurPod;
+  document.getElementById('fm-overlay').classList.add('show');
+  fmList(fmCurPath);
+}
+
+function closeFileManager() {
+  document.getElementById('fm-overlay').classList.remove('show');
+  hideFmUploadMenu();
+}
+
+function toggleFmUploadMenu() {
+  var menu = document.getElementById('fm-upload-menu');
+  menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+}
+
+function hideFmUploadMenu() {
+  document.getElementById('fm-upload-menu').style.display = 'none';
+}
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.upload-btn')) hideFmUploadMenu();
+});
+
+function fmGoUp() {
+  if (fmCurPath === '/') return;
+  var parts = fmCurPath.replace(/\/$/, '').split('/');
+  parts.pop();
+  fmList(parts.join('/') || '/');
+}
+
+function fmList(path) {
+  var wsUrl = document.getElementById('ws-url').value.trim();
+  var apiBase = wsUrl.replace('/ws/terminal', '').replace('ws://', 'http://').replace('wss://', 'https://');
+  var url = apiBase + '/api/files?namespace=' + encodeURIComponent(fmCurNs) +
+    '&pod=' + encodeURIComponent(fmCurPod) +
+    '&container=' + encodeURIComponent(fmCurContainer) +
+    '&path=' + encodeURIComponent(path);
+
+  document.getElementById('fm-status').textContent = '加载中...';
+
+  fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.error) {
+      document.getElementById('fm-status').textContent = data.error;
+      document.getElementById('fm-tbody').innerHTML = '<tr><td colspan="3" style="color:#f44336;padding:16px;">' + escapeHTML(data.error) + '</td></tr>';
+      return;
+    }
+    fmCurPath = data.path || path;
+    document.getElementById('fm-path').value = fmCurPath;
+    fmFiles = data.files || [];
+    document.getElementById('fm-status').textContent = fmFiles.length + ' 个项目';
+    fmRender();
+  }).catch(function() {
+    document.getElementById('fm-status').textContent = '请求失败';
+  });
+}
+
+function fmSort(key) {
+  if (fmSortKey === key) { fmSortAsc = !fmSortAsc; }
+  else { fmSortKey = key; fmSortAsc = (key === 'time'); }
+  fmRender();
+}
+
+function fmRender() {
+  var sorted = fmFiles.slice();
+  var key = fmSortKey;
+  var asc = fmSortAsc;
+  sorted.sort(function(a, b) {
+    // Directories first
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    var va, vb;
+    if (key === 'size') { va = a.is_dir ? -1 : parseInt(a.size) || 0; vb = b.is_dir ? -1 : parseInt(b.size) || 0; }
+    else if (key === 'time') { va = a.modify_time || ''; vb = b.modify_time || ''; }
+    else { va = a.name.toLowerCase(); vb = b.name.toLowerCase(); }
+    if (va < vb) return asc ? -1 : 1;
+    if (va > vb) return asc ? 1 : -1;
+    return 0;
+  });
+
+  // Update sort arrows
+  ['name','size','time'].forEach(function(k) {
+    var el = document.getElementById('sort-' + k);
+    if (el) el.textContent = (k === fmSortKey) ? (fmSortAsc ? '▲' : '▼') : '';
+  });
+
+  var html = '';
+  sorted.forEach(function(f) {
+    var icon = f.is_dir ? '📁' : '📄';
+    var cls = f.is_dir ? 'dir' : 'file';
+    var click = f.is_dir ? " onclick=\"fmList('" + escapeHTML(fmCurPath.replace(/\/$/, "") + "/" + f.name) + "')\"" : " onclick=\"fmDownload('" + escapeHTML(fmCurPath.replace(/\/$/, "") + "/" + f.name) + "')\"";
+    html += '<tr><td class="fm-name ' + cls + '"' + click + '>' + icon + ' ' + escapeHTML(f.name) + '</td>' +
+      '<td class="fm-size">' + escapeHTML(f.size || '-') + '</td>' +
+      '<td class="fm-time">' + escapeHTML(f.modify_time || '') + '</td></tr>';
+  });
+
+  if (!html) html = '<tr><td colspan="3" style="padding:16px;color:#64748b;">目录为空</td></tr>';
+  document.getElementById('fm-tbody').innerHTML = html;
+}
+
+
+// Download a file from the container
+function fmDownload(filePath) {
+  var wsUrl = document.getElementById('ws-url').value.trim();
+  var apiBase = wsUrl.replace('/ws/terminal', '').replace('ws://', 'http://').replace('wss://', 'https://');
+  var url = apiBase + '/api/download?namespace=' + encodeURIComponent(fmCurNs) +
+    '&pod=' + encodeURIComponent(fmCurPod) +
+    '&container=' + encodeURIComponent(fmCurContainer) +
+    '&path=' + encodeURIComponent(filePath);
+  // Trigger browser download via hidden link
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = filePath.split('/').pop();
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// Override upload complete to refresh file manager
+var _origUploadFiles = uploadFiles;
+uploadFiles = function(files, ns, pod, container, path, apiBase, idx) {
+  // If file manager is open, use its current path
+  if (document.getElementById('fm-overlay').classList.contains('show')) {
+    path = fmCurPath;
+    ns = fmCurNs;
+    pod = fmCurPod;
+    container = fmCurContainer;
+  }
+  _origUploadFiles(files, ns, pod, container, path, apiBase, idx);
+  // Hook into completion: refresh FM after all uploads
+  var origOnload = XMLHttpRequest.prototype.onload;
+};
+
+// Refresh FM after uploads complete
+var _origShowToast = showToast;
+showToast = function(msg, type) {
+  _origShowToast(msg, type);
+  if (msg === '全部上传完成' && document.getElementById('fm-overlay').classList.contains('show')) {
+    setTimeout(function() { fmList(fmCurPath); }, 500);
+  }
+};
+
+// Click overlay background to close
+document.getElementById('fm-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeFileManager();
+});
+
+</script>
+</body>
+</html>

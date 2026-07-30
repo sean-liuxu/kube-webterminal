@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>xterm test</title>
+<link rel="stylesheet" href="/xterm/xterm.min.css" />
+<style>
+body { margin: 0; background: #1a1a2e; color: #fff; font-family: monospace; }
+#terminal { width: 100vw; height: 100vh; padding: 4px; }
+</style>
+</head>
+<body>
+<div id="terminal"></div>
+
+<script src="/xterm/xterm.min.js"></script>
+<script src="/xterm/addon-fit.min.js"></script>
+<script>
+var logs = [];
+
+function log(msg) {
+  logs.push(Date.now() + ': ' + msg);
+  console.log(msg);
+}
+
+function showLogs() {
+  var el = document.getElementById('log-output');
+  if (el) el.innerText = logs.join('\n');
+}
+
+try {
+  log('页面加载完成');
+  log('Terminal typeof: ' + typeof Terminal);
+  log('FitAddon typeof: ' + typeof FitAddon);
+
+  if (typeof Terminal === 'undefined') {
+    log('ERROR: Terminal 未定义!');
+  } else if (typeof FitAddon === 'undefined') {
+    log('ERROR: FitAddon 未定义!');
+  } else {
+    log('创建 Terminal 实例...');
+    var term = new Terminal({
+      rows: 30,
+      cols: 100,
+      theme: { background: '#1a1a2e', foreground: '#e0e0e0' }
+    });
+    log('Terminal 创建成功');
+
+    log('打开终端...');
+    term.open(document.getElementById('terminal'));
+    log('终端已打开');
+
+    log('创建 FitAddon...');
+    // 兼容 4.x (FitAddon 是对象, 类在 .FitAddon) 和 5.x (FitAddon 直接是类)
+    var FitAddonClass = typeof FitAddon === 'function' ? FitAddon : (FitAddon.FitAddon || FitAddon);
+    var fitAddon = new FitAddonClass();
+    log('FitAddon 创建成功');
+
+    log('加载 addon...');
+    term.loadAddon(fitAddon);
+    log('addon 加载成功');
+
+    log('执行 fit...');
+    fitAddon.fit();
+    log('fit 完成, cols=' + term.cols + ' rows=' + term.rows);
+
+    // 延迟再 fit 一次（DOM 可能还没完全渲染）
+    setTimeout(function() { fitAddon.fit(); log('re-fit: cols=' + term.cols + ' rows=' + term.rows); }, 200);
+    setTimeout(function() { fitAddon.fit(); log('re-fit2: cols=' + term.cols + ' rows=' + term.rows); }, 500);
+
+    // 窗口缩放时自动适配
+    window.addEventListener('resize', function() {
+      fitAddon.fit();
+      if (testWs && testWs.readyState === WebSocket.OPEN) {
+        testWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    });
+
+    log('写入测试文字...');
+    term.write('Hello from xterm.js!\r\n');
+    term.write('If you can see this, xterm works.\r\n');
+    log('测试文字已写入');
+
+    // Test WebSocket connectivity
+    log('测试 WebSocket 连接...');
+    var testWs = new WebSocket('ws://' + location.host + '/ws/terminal');
+    testWs.binaryType = 'arraybuffer';
+
+    testWs.onopen = function() {
+      log('WebSocket OPEN — 连接成功!');
+      testWs.send(JSON.stringify({
+        type: 'init',
+        namespace: 'default',
+        pod: 'busybox',
+        command: '/bin/sh',
+        user_id: 'web-user'
+      }));
+    };
+
+    testWs.onmessage = function(evt) {
+      if (typeof evt.data === 'string') {
+        try {
+          var msg = JSON.parse(evt.data);
+          log('JSON: type=' + msg.type + ' msg=' + (msg.message || ''));
+          if (msg.type === 'ready') {
+            log('  *** 终端就绪，可以输入命令了! ***');
+            term.focus();
+          }
+        } catch(e) {
+          term.write(evt.data);
+        }
+        return;
+      }
+      if (evt.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(evt.data));
+      }
+    };
+
+    // 键盘输入 -> WebSocket
+    term.onData(function(data) {
+      if (testWs.readyState === WebSocket.OPEN) {
+        testWs.send(JSON.stringify({ type: 'stdin', data: data }));
+      }
+    });
+
+    // 窗口大小变化 -> WebSocket
+    term.onResize(function(size) {
+      if (testWs.readyState === WebSocket.OPEN) {
+        testWs.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
+      }
+    });
+
+    testWs.onerror = function(e) { log('WebSocket ERROR'); };
+    testWs.onclose = function(e) { log('WebSocket CLOSE code=' + e.code); };
+  }
+} catch(e) {
+  log('FATAL ERROR: ' + e.message);
+  log('Stack: ' + (e.stack || 'no stack'));
+}
+
+// Show logs after a delay
+setTimeout(function() {
+  showLogs();
+  var div = document.createElement('pre');
+  div.id = 'log-output';
+  div.style.cssText = 'position:fixed;bottom:0;left:0;right:0;height:120px;overflow:auto;background:#000;color:#0f0;font-size:11px;padding:8px;z-index:9999';
+  div.textContent = logs.join('\n');
+  document.body.appendChild(div);
+}, 2000);
+</script>
+</body>
+</html>
