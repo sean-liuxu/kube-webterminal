@@ -45,7 +45,7 @@ kubectl apply -f deploy.yaml
 | `--kubeconfig` | `""` | kubeconfig 路径（集群内留空） |
 | `--tls-cert` | `""` | TLS 证书（启用 WSS） |
 | `--tls-key` | `""` | TLS 私钥 |
-| `--static-dir` | `./static` | 静态文件目录 |
+| `--static-dir` | `""` | 静态文件目录（留空 = 使用内嵌前端） |
 | `--default-user` | `""` | 默认 Impersonate 用户 |
 | `--debug` | `false` | 开启调试端点 |
 

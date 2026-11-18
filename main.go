@@ -21,7 +21,7 @@ var (
 	kubeconfig  = flag.String("kubeconfig", "", "Path to kubeconfig file (empty for in-cluster)")
 	tlsCert     = flag.String("tls-cert", "", "TLS certificate file path for WSS")
 	tlsKey      = flag.String("tls-key", "", "TLS private key file path for WSS")
-	staticDir   = flag.String("static-dir", "./static", "Static files directory")
+	staticDir   = flag.String("static-dir", "", "Static files directory (empty = use frontend embedded in binary)")
 	defaultUser = flag.String("default-user", "", "Default impersonation user (empty = no impersonation)")
 	enableDebug = flag.Bool("debug", false, "Enable debug endpoints")
 )
@@ -34,7 +34,11 @@ func main() {
 	log.Println("  K8s Pod WebTerminal (WebSSH) Gateway")
 	log.Println("========================================")
 	log.Printf("[INIT] Port: %d", *port)
-	log.Printf("[INIT] Static dir: %s", *staticDir)
+	if *staticDir != "" {
+		log.Printf("[INIT] Static dir: %s (disk mode)", *staticDir)
+	} else {
+		log.Printf("[INIT] Static dir: (embedded frontend)")
+	}
 	if *tlsCert != "" {
 		log.Printf("[INIT] TLS: enabled (WSS mode)")
 	} else {
@@ -94,9 +98,8 @@ func main() {
 	// Health check.
 	mux.HandleFunc("/healthz", handleHealthz)
 
-	// Serve static files.
-	fs := http.FileServer(http.Dir(*staticDir))
-	mux.Handle("/", fs)
+	// Serve static files (embedded by default, disk override via --static-dir).
+	mux.Handle("/", staticHandler(*staticDir))
 
 	// Graceful shutdown.
 	srv := &http.Server{
