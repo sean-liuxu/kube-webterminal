@@ -4,22 +4,14 @@
 # ============================================================
 # Usage: kubectl apply -f deploy.yaml
 # This deploys the webterminal gateway with NodePort exposure,
-# no Ingress required.
-
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: webterminal
-  labels:
-    app: webterminal
+# no Ingress required. All resources live in the `default` namespace.
 
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: webterminal-gateway
-  namespace: webterminal
+  namespace: default
   labels:
     app: webterminal-gateway
 spec:
@@ -80,7 +72,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: webterminal-gateway
-  namespace: webterminal
+  namespace: default
   labels:
     app: webterminal-gateway
 spec:
